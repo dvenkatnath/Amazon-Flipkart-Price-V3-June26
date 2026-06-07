@@ -12,6 +12,25 @@ dist
 dist-ssr
 *.local
 
+# Test, debug, and one-off utility scripts
+test_*.ts
+test_*.js
+test_*.cjs
+debug_*.ts
+debug_*.md
+debug_*.json
+*_debug.md
+bulk_debug.ts
+fetch_*.ts
+find_urls_*.ts
+recover_urls.ts
+regenerate_urls.ts
+run_fix.ts
+
+# Sample/test input data
+input*.xlsx
+output*.xlsx
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
