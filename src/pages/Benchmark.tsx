@@ -35,8 +35,8 @@ const Benchmark = () => {
             </Link>
             <div className="flex items-center justify-center gap-2 flex-1 ml-8">
               <img 
-                src="/lovable-uploads/9a2401ae-8405-439c-9c15-ae83ee8b0379.png" 
-                alt="Logo" 
+                src="/lovable-uploads/21797b74-e48b-48e9-bd6d-520b7c0516da.png" 
+                alt="Customer Capital Logo" 
                 className="h-16 w-auto"
               />
               <h1 className="text-2xl font-bold text-gray-900">Price Benchmarking Tool - Ver 2.0</h1>

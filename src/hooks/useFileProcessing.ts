@@ -4,6 +4,7 @@ import { useToast } from "@/hooks/use-toast";
 import { processExcelFile } from "@/utils/excelProcessor";
 import { FirecrawlService } from "@/utils/FirecrawlService";
 import { ProcessingResult, ProcessingState, ProcessingTiming } from "@/types/processing";
+import { getPortalProcessingLabel } from "@/lib/utils";
 
 export const useFileProcessing = (onResultsReady: (results: ProcessingResult[], timing: ProcessingTiming) => void) => {
   const [state, setState] = useState<ProcessingState>({
@@ -114,7 +115,7 @@ export const useFileProcessing = (onResultsReady: (results: ProcessingResult[], 
       const portal = settings.portal || 'amazon';
       toast({
         title: "Processing Complete",
-        description: `Successfully processed ${successCount} of ${results.length} items using ${portal.toUpperCase()} API`,
+        description: `Successfully processed ${successCount} of ${results.length} items using ${getPortalProcessingLabel(portal)}`,
       });
 
     } catch (error) {

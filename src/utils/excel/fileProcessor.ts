@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { getPortalProcessingLabel } from '@/lib/utils';
 import { readExcelFile } from './excelReader';
 import { saveResultsToOutput } from './excelWriter';
 import { processRowsForPrices } from './priceProcessor';
@@ -57,7 +58,7 @@ export const processValidRows = async (
   const portal = settings.portal || 'amazon';
   
   // Step 5: Batch process selected rows for prices using selected portal API
-  progressCallback(15, 100, `Processing ${rowsToProcess} products using ${portal.toUpperCase()} API...`);
+  progressCallback(15, 100, `Processing ${rowsToProcess} products using ${getPortalProcessingLabel(portal)}...`);
   
   console.log(`Batch processing ${rowsToProcess} product rows for ${portal.toUpperCase()} prices...`);
   
