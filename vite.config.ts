@@ -8,6 +8,13 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 5173,
+    proxy: {
+      "/api/rainforest": {
+        target: "https://api.rainforestapi.com",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/rainforest/, "/request"),
+      },
+    },
   },
   plugins: [
     react(),

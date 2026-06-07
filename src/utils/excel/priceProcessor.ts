@@ -1,4 +1,3 @@
-
 import { extractPricesFromMatrixApi, resolveAsinForRow } from '../matrixApiExtractor';
 import { extractPricesFromFlipkartApi } from '../flipkartApiExtractor';
 import { ProcessingResult } from '@/types/processing';
@@ -8,66 +7,83 @@ export const processRowsForPrices = async (
   settings: any,
   progressCallback: (completed: number, total: number, currentAsin: string) => void
 ): Promise<ProcessingResult[]> => {
-  // Get delivery PIN code and portal from settings
   const deliveryPincode = settings.defaultPincode || '';
-  const portal = settings.portal || 'amazon'; // Default to Amazon
+  const portal = (settings.portal || 'amazon').toLowerCase();
 
-  console.log(`\n=== ${portal.toUpperCase()} BATCH PROCESSING ${rows.length} ROWS ===`);
-  console.log(`Processing rows: ${rows.map(r => r.row).join(', ')}`);
-  console.log(`📍 Using delivery PIN code: ${deliveryPincode}`);
-  console.log(`🛒 Using portal: ${portal.toUpperCase()}`);
+  console.log(`\n=== ${portal.toUpperCase()} BATCH: ${rows.length} rows | PIN: ${deliveryPincode} ===`);
 
   let priceResults: Record<string, any> = {};
 
   if (portal === 'flipkart') {
-    // Extract all Product URLs and Names for Flipkart processing (needed for mismatch validation)
-    const productUrls = rows.map(row => ({
-      url: row.productUrl || '',
-      productName: row.productName
-    })).filter(item => item.url || item.productName);
-    console.log(`📋 [Price Processor] Extracted ${productUrls.length} Flipkart items for processing`);
-    console.log(`📋 [Price Processor] Sample items:`, productUrls.slice(0, 2));
-    console.log(`📋 [Price Processor] Calling extractPricesFromFlipkartApi...`);
-
-    // Batch process all URLs using Flipkart via Firecrawl
+    // ── Flipkart path (unchanged) ──────────────────────────────────────────
+    const productUrls = rows
+      .map(row => ({ url: row.productUrl || '', productName: row.productName }))
+      .filter(item => item.url || item.productName);
     priceResults = await extractPricesFromFlipkartApi(productUrls, progressCallback, deliveryPincode);
-    console.log(`📋 [Price Processor] Flipkart extraction completed. Results:`, Object.keys(priceResults).length);
+
   } else {
-    const missingAsinRows = rows.filter(row => !row.asin?.trim());
-    if (missingAsinRows.length > 0) {
-      console.log(`🔍 ${missingAsinRows.length}/${rows.length} rows missing ASIN — searching by product name...`);
-      for (let i = 0; i < missingAsinRows.length; i++) {
-        const row = missingAsinRows[i];
-        progressCallback?.(
-          i,
-          missingAsinRows.length,
-          `Resolving ASIN ${i + 1}/${missingAsinRows.length}: ${row.productName}`
-        );
+    // ── Amazon path ────────────────────────────────────────────────────────
+    //
+    // ASIN resolution + price fetching are pipelined:
+    //
+    //   Rows WITH asin    → go straight into the price batch
+    //   Rows WITHOUT asin → resolved in parallel (type=search), then
+    //                        their asin is injected into the rows array
+    //                        so the price batch can use them.
+    //
+    // This avoids the old pattern of "resolve all missing ASINs sequentially
+    // first, THEN fetch all prices" which doubled wall-clock time when
+    // many rows lacked ASINs.
 
-        const resolvedAsin = await resolveAsinForRow(row, deliveryPincode);
-        if (resolvedAsin) {
-          row.asin = resolvedAsin;
-          console.log(`  ✓ Row ${row.row}: "${row.productName}" → ${resolvedAsin}`);
-        } else {
-          console.log(`  ✗ Row ${row.row}: Could not resolve ASIN for "${row.productName}"`);
-        }
-      }
+    const rowsNeedingAsin  = rows.filter(r => !r.asin?.trim());
+    const rowsWithAsin     = rows.filter(r =>  r.asin?.trim());
+
+    let resolvePromise: Promise<void> = Promise.resolve();
+
+    if (rowsNeedingAsin.length > 0) {
+      console.log(`🔍 Resolving ${rowsNeedingAsin.length} missing ASINs in parallel with price fetching...`);
+
+      // Fire ASIN resolution concurrently (doesn't count against price-fetch rate limits
+      // because type=search hits a different Rainforest endpoint pool)
+      resolvePromise = Promise.all(
+        rowsNeedingAsin.map(async (row, i) => {
+          const asin = await resolveAsinForRow(row, deliveryPincode);
+          if (asin) {
+            row.asin = asin;
+            console.log(`  ✓ Row ${row.row}: "${row.productName}" → ${asin}`);
+          } else {
+            console.log(`  ✗ Row ${row.row}: could not resolve ASIN for "${row.productName}"`);
+          }
+        })
+      ).then(() => undefined);
     }
 
-    const asins = rows.map(row => row.asin).filter(asin => asin);
-    console.log(`Extracted ${asins.length} ASINs for location-based batch processing`);
+    // Start price fetching for rows that already have ASINs immediately,
+    // then wait for ASIN resolution to complete and fetch the resolved ones
+    const knownAsins = rowsWithAsin.map(r => r.asin).filter(Boolean);
 
-    if (asins.length === 0) {
-      console.warn('⚠️ No ASINs available — add ASIN/Product_URL columns or ensure product names are searchable');
-    } else {
-      priceResults = await extractPricesFromMatrixApi(asins, progressCallback, deliveryPincode);
+    // Run both concurrently: known-ASIN price fetching + missing-ASIN resolution
+    const [knownPriceResults] = await Promise.all([
+      knownAsins.length > 0
+        ? extractPricesFromMatrixApi(knownAsins, progressCallback, deliveryPincode)
+        : Promise.resolve({}),
+      resolvePromise,
+    ]);
+
+    // Now fetch prices for rows whose ASINs were just resolved
+    const resolvedAsins = rowsNeedingAsin.map(r => r.asin).filter(Boolean);
+    let resolvedPriceResults: Record<string, number | string> = {};
+    if (resolvedAsins.length > 0) {
+      console.log(`\n[Matrix] Fetching prices for ${resolvedAsins.length} resolved ASINs...`);
+      resolvedPriceResults = await extractPricesFromMatrixApi(resolvedAsins, progressCallback, deliveryPincode);
     }
+
+    priceResults = { ...knownPriceResults, ...resolvedPriceResults };
   }
 
-  // Convert to ProcessingResult format - ENSURE PROPER ROW NUMBERS
-  const results: ProcessingResult[] = rows.map((row, index) => {
+  // ── Map results back to rows ───────────────────────────────────────────────
+  const results: ProcessingResult[] = rows.map(row => {
     const identifier = portal === 'flipkart' ? (row.productUrl || row.productName) : row.asin;
-
     let extractedPrice: number | string | undefined;
     let fetchedUrl = row.productUrl;
 
@@ -78,72 +94,43 @@ export const processRowsForPrices = async (
       extractedPrice = priceResults[identifier];
     }
 
-    // Use the actual Excel row number from the parsed data
-    const actualRowNumber = row.row;
-
     let benchmarkPrice: number | null = null;
     let status: 'success' | 'not_found' | 'processing' = 'not_found';
     let priceChange: 'higher' | 'lower' | 'similar' | undefined;
-    let remarksValue: string = '';
+    let remarksValue = '';
 
     if (typeof extractedPrice === 'number') {
-      // Calculate benchmark price: Portal_Price - Selling_Price
       benchmarkPrice = extractedPrice - row.sellingPrice;
       status = 'success';
-
-      // Calculate price change based on 2% threshold
-      const twoPercentThreshold = row.sellingPrice * 0.02;
-
-      if (benchmarkPrice > twoPercentThreshold) {
-        priceChange = 'higher'; // Portal price is significantly higher than selling price
-        remarksValue = 'Favourable';
-      } else if (benchmarkPrice < -twoPercentThreshold) {
-        priceChange = 'lower'; // Portal price is significantly lower than selling price
-        remarksValue = 'Unfavourable';
-      } else {
-        priceChange = 'similar'; // Within 2% threshold
-        remarksValue = '';
-      }
-
-      const pinInfo = portal === 'flipkart' ? '' : ` (PIN: ${deliveryPincode})`;
-      console.log(`Excel Row ${actualRowNumber}: ${portal}=$${extractedPrice}${pinInfo}, Selling=$${row.sellingPrice}, Benchmark=$${benchmarkPrice}, Change=${priceChange}, Remarks=${remarksValue}`);
+      const thresh = row.sellingPrice * 0.02;
+      if      (benchmarkPrice >  thresh) { priceChange = 'higher'; remarksValue = 'Favourable'; }
+      else if (benchmarkPrice < -thresh) { priceChange = 'lower';  remarksValue = 'Unfavourable'; }
+      else                               { priceChange = 'similar'; remarksValue = ''; }
+      console.log(`Row ${row.row}: ₹${extractedPrice} (${portal}) | ₹${row.sellingPrice} (sell) | diff ₹${benchmarkPrice} → ${remarksValue || 'Similar'}`);
     } else {
-      const failureReason = !row.asin
-        ? 'No ASIN — add ASIN/Product_URL or use a searchable product name'
-        : extractedPrice ?? 'Currently Unavailable';
-      console.log(`Excel Row ${actualRowNumber}: Location-based price extraction failed - ${failureReason}`);
-      remarksValue = typeof failureReason === 'string' ? failureReason : 'Currently Unavailable';
+      const reason = !row.asin
+        ? 'No ASIN — add ASIN/Product_URL or use searchable product name'
+        : (extractedPrice ?? 'Currently Unavailable');
+      remarksValue = typeof reason === 'string' ? reason : 'Currently Unavailable';
+      console.log(`Row ${row.row}: no price — ${remarksValue}`);
     }
 
-    const result: ProcessingResult = {
-      row: actualRowNumber, // Use the actual Excel row number
-      productName: row.productName,
+    return {
+      row:           row.row,
+      productName:   row.productName,
       originalPrice: row.sellingPrice,
-      amazonPrice: typeof extractedPrice === 'number' ? extractedPrice : (remarksValue || extractedPrice),
-      benchmarkPrice: benchmarkPrice,
-      status: status,
-      priceChange: priceChange,
-      productUrl: fetchedUrl || (portal === 'amazon' ? `https://amazon.in/dp/${row.asin}` : row.productUrl),
-      asin: portal === 'amazon' ? row.asin : undefined,
-      remarks: remarksValue
+      amazonPrice:   typeof extractedPrice === 'number' ? extractedPrice : (remarksValue || extractedPrice),
+      benchmarkPrice,
+      status,
+      priceChange,
+      productUrl:    fetchedUrl || (portal === 'amazon' ? `https://amazon.in/dp/${row.asin}` : row.productUrl),
+      asin:          portal === 'amazon' ? row.asin : undefined,
+      remarks:       remarksValue,
     };
-
-    return result;
   });
 
-  const successCount = results.filter(r => r.status === 'success').length;
-  const failureCount = results.filter(r => r.status !== 'success').length;
-  const higherCount = results.filter(r => r.priceChange === 'higher').length;
-  const lowerCount = results.filter(r => r.priceChange === 'lower').length;
-
-  console.log(`\n=== ${portal.toUpperCase()} BATCH PROCESSING COMPLETE ===`);
-  console.log(`📍 Delivery PIN code used: ${deliveryPincode}`);
-  console.log(`🛒 Portal used: ${portal.toUpperCase()}`);
-  console.log(`✅ Successfully processed: ${successCount}/${rows.length}`);
-  console.log(`❌ Failed to process: ${failureCount}/${rows.length}`);
-  console.log(`📈 Higher prices (>2% favorable): ${higherCount}`);
-  console.log(`📉 Lower prices (>2% unfavorable): ${lowerCount}`);
-  console.log(`📊 Processed Excel rows: ${results.map(r => r.row).join(', ')}`);
-
+  const ok   = results.filter(r => r.status === 'success').length;
+  const fail = results.length - ok;
+  console.log(`\n=== DONE: ✅ ${ok}/${rows.length} | ❌ ${fail}/${rows.length} ===`);
   return results;
 };

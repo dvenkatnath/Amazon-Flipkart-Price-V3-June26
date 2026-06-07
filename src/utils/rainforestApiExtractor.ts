@@ -32,7 +32,7 @@ export const extractPriceFromRainforestApi = async (asin: string): Promise<numbe
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
-    const response = await fetch(`https://api.rainforestapi.com/request?${params}`, {
+    const response = await fetch(`/api/rainforest?${params}`, {
       signal: controller.signal,
       headers: { Accept: 'application/json' },
     });
